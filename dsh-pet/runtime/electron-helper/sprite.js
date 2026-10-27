@@ -43,7 +43,12 @@ class PetSprite {
     // 注意：余量自此**不再四边相等**，主进程不能再按「窗口宽/4」反推命中区，故 setBounds 一并上报余量。
     const m = this.size * WINDOW_MARGIN_RATIO;
     const fontConf = pet.font || config.font || S.DEFAULT_FONT;
-    this.margin = { t: Math.max(m, S.bubbleTopMarginPx(fontConf, this.size)), r: m, b: m, l: m };
+    // base = 配置余量，只用来决定窗口尺寸（窗口本身保持恒定大小，避免逐帧改尺寸）；
+    // margin = 宠物在窗口内的**实际**偏移，贴边时由 sendBounds 动态收缩/放大（见那里的注释）。
+    const baseMargin = { t: Math.max(m, S.bubbleTopMarginPx(fontConf, this.size)), r: m, b: m, l: m };
+    this.baseMargin = baseMargin;
+    this.margin = { ...baseMargin };
+    window.__dshPetDebug.baseMargin = this.baseMargin;
     window.__dshPetDebug.winMargin = this.margin;
     // 宠物包围盒左上角在【工作区】坐标系里的位置（本窗口的位置 = 宠物的位置）
     this.pos = { x: 0, y: 0 };
@@ -288,34 +293,78 @@ class PetSprite {
     this.el.remove();
   }
 
-  // 目标包围盒左上角（视口相对坐标）→ 移动窗口：窗口 = sprite + 四周外扩余量
-  // （sprite 钉在窗口 (margin.l, margin.t)，气泡/弹窗显示在余量里）。
+  /**
+   * 宠物在窗口内的偏移（窗口局部坐标）。窗口被夹到屏边后，宠物要贴到屏幕上就必须滑出
+   * 原来的「半只宠物」余量；只在偏移变化时写 DOM，避免漫游逐帧触发布局。
+   */
+  applyWindowOffset() {
+    if (this._offX === this.margin.l && this._offY === this.margin.t) return;
+    this._offX = this.margin.l;
+    this._offY = this.margin.t;
+    this.el.style.left = this.margin.l + 'px';
+    this.el.style.top = this.margin.t + 'px';
+  }
+
+  // 宠物包围盒左上角（视口相对坐标）→ 窗口落点：窗口尺寸恒定，位置夹在当前屏内；
+  // 宠物在窗口内的偏移随之变化（贴边时余量收缩到 0，超出屏幕时为负、由窗口裁掉）。
+  //
+  // 为什么夹窗口而不是让窗口跟着宠物出屏：Linux/X11 的 WM 一定会把窗口夹回工作区
+  // （实测 GNOME：请求负坐标 → 落在 0；请求超出右下 → 落在「工作区 − 窗口尺寸」）。
+  // 窗口 = 宠物 + 四周余量，WM 夹完宠物就离屏幕边还差一圈余量，拖拽范围平白少一截。
+  // 夹窗口 + 滑宠物后，窗口始终在工作区内，宠物仍能到屏幕任意边缘；菜单/气泡的夹取
+  // （visibleClampRect）也继续用真实窗口几何，不需要另建一套坐标系。
+  //
   // setContentBounds 要**屏幕**坐标：pos 是视口（桌面外接矩形）相对坐标，先加 VIEW.x/y
-  // 再统一 ×scale 回物理像素（§3.5 IPC 收口）——主进程收到的数字与线性化旧行为逐位一致，
-  // 主进程侧（bounds/去重/碰撞 broker）完全不用改。
+  // 再统一 ×scale 回物理像素（§3.5 IPC 收口）。
   sendBounds(px, py) {
     this.pos = { x: Math.round(px), y: Math.round(py) };
     window.__dshPetDebug.dragPos = { x: this.pos.x, y: this.pos.y };
+    const base = this.baseMargin;
+    const winW = this.size + base.l + base.r;
+    const winH = this.winH + base.t + base.b;
+    // Linux/X11 的 WM 按 `_NET_WORKAREA`（整个桌面的工作区外接矩形）夹窗口：顶栏/任务栏
+    // 也算边界。这里用视口坐标（0,0,VIEW.w,VIEW.h；= 工作区并集的外接矩形）作为夹取范围，
+    // 而不是单块屏——多屏骑缝时按单屏夹会把窗口截在屏缝上，宠物半个身子被裁掉。
+    // **注意别把 VIEW.x/y 加进来**：this.pos 是视口相对坐标，VIEW.x/y 是视口原点的屏幕坐标，
+    // 混用会让窗口在工作区下缘多伸出一截、再被 WM 夹回，宠物偏离目标位置。
+    // Windows/macOS 不夹窗口（可盖任务栏/菜单栏，也允许拖出屏幕），保持改造前的行为。
+    const area =
+      window.petBridge && window.petBridge.platform === 'linux' ? { x: 0, y: 0, width: VIEW.w, height: VIEW.h } : null;
+    const place = S.placePetWindow({
+      x: this.pos.x,
+      y: this.pos.y,
+      width: this.size,
+      height: this.winH,
+      windowWidth: winW,
+      windowHeight: winH,
+      base,
+      area,
+    });
+    this.margin = place.margins;
+    this.applyWindowOffset();
+    window.__dshPetDebug.winMargin = this.margin;
     if (window.petBridge) {
       // 完整状态一次捎带：size/bottomPad 让静止宠物从首帧起就登记进碰撞站场
       // （此前只有 report-flight 带尺寸，从没飞过的宠物 size=0 被碰撞检测直接跳过）；
       // vx/vy 带当前速度——飞行中实时值、静止/拖拽 = 0，避免落地后残留上次飞行速度干扰碰撞动量。
       const fly = this.throwState;
       window.petBridge.setBounds(
-        toScreen(this.pos.x - this.margin.l + VIEW.x),
-        toScreen(this.pos.y - this.margin.t + VIEW.y),
-        toScreen(this.size + this.margin.l + this.margin.r),
-        toScreen(this.winH + this.margin.t + this.margin.b),
+        toScreen(place.x + VIEW.x),
+        toScreen(place.y + VIEW.y),
+        toScreen(winW),
+        toScreen(winH),
         toScreen(this.pos.x), // 包围盒左上角（碰撞站场用：窗口坐标 ≠ 包围盒坐标）
         toScreen(this.pos.y),
         toScreen(this.size),
         toScreen(this.bottomPad),
         fly ? toScreen(fly.vx) : 0,
         fly ? toScreen(fly.vy) : 0,
-        // 窗口余量（DIP）：主进程据此算宠物身体命中区——余量不再四边相等（上边距按气泡加高），
-        // 不能再按「窗口宽/4」反推（见 pointer-target.js 的 spriteHitRect）。
+        // 窗口余量（DIP）：主进程据此算宠物身体命中区。贴边后 l/r、t/b 不再对称，
+        // 必须四个都上报——只给 l/t 会让 stageW 算错，命中区整体偏移（见 pointer-target.js）。
         toScreen(this.margin.l),
         toScreen(this.margin.t),
+        toScreen(this.margin.r),
+        toScreen(this.margin.b),
       );
     }
     // 位置变了（宠物漫游/拖拽/飞行，窗口跟着动）：提示若正显示必须重摆一次——它跟的是光标，
@@ -766,7 +815,7 @@ class PetSprite {
       if (t <= leadSec) ratioX = startRatio;
       else if (t >= duration - tailSec) ratioX = targetRatio;
       else ratioX = startRatio + dir * totalRatio * ((t - leadSec) / travelWindow);
-      // 移动的是窗口（宠物包围盒跟随），sprite 在本窗口内不动
+      // 宠物包围盒跟随同一比例；窗口贴边时由 sendBounds 在窗口内滑动
       this.sendBounds(ratioX * W - this.halfW, startYRatio * H - this.halfH);
       if (t < duration - tailSec) {
         this.moveRef = requestAnimationFrame(step);
@@ -823,7 +872,7 @@ class PetSprite {
       vel.vy = S.springStep(vel.vy, y, target.y, dt, this.physics.throwPower);
       x += vel.vx * dt;
       y += vel.vy * dt;
-      this.sendBounds(x, y); // 移动的是窗口（this.pos 实时更新）；sprite 在本窗口内不动
+      this.sendBounds(x, y); // 窗口贴边时宠物在窗口内滑动（见 sendBounds）
       this.dragFollow = requestAnimationFrame(step);
     };
     this.dragFollow = requestAnimationFrame(step);

@@ -124,6 +124,7 @@ import {
   reduceWorkStatus,
   currentTaskFromTodo,
   goalUpdateAction,
+  isHostWorkStatusState,
   WorkStatusStore,
   type WorkStatusTurnContext,
 } from './work-status';
@@ -348,6 +349,9 @@ export function apply(ctx: any): void {
   // 同一毫秒内连改两次会被误判成"没变化"而漏写（测试里连发事件就会踩到）。
   // data 里不再带 ts：「变了没有」已由叶子 counter 承担，少一个会漂移的第二信号。
   let publishedWork = '\u0000';
+  // 外部宿主（OpenCode / Claude Code / Codex）写入用的单调序号：同档位重复写入时也要能更新 task，
+  // 不能让 WorkStatusStore 的"同状态且 seq 不更大 → 无变化"把任务文案一并吞掉。
+  let externalWorkSeq = 0;
   const publishWorkStatus = (): void => {
     const snap = workStatus.snapshot();
     const key = String(snap.state) + '\u0000' + String(snap.task);
@@ -1290,6 +1294,70 @@ export function apply(ctx: any): void {
         }
         signal?.addEventListener('abort', onAbort, { once: true });
       });
+    }
+
+    // 外部宿主工作状态：/dsh-pet-7340/external/work-status（POST）
+    //
+    // 独立模式没有 DSH 的 `session/event`，OpenCode / Claude Code / Codex 也不是 DSH 会话。
+    // 这条端点让它们把"正在思考 / 干活 / 等确认 / 完成 / 出错"直接写进同一个 WorkStatusStore，
+    // 从而复用既有的优先级聚合、任务文案、终态清理与前端渲染——适配层不需要自己拼 /anim 或气泡。
+    //
+    // 契约（见 openapi.yaml）：
+    //   { state: <六档之一> | null, task?: string | null, session?: string }
+    //   - state 必填；null = 清掉该外部会话（不是"设为空闲档"，而是删条目，让其他会话浮上来）。
+    //   - session 是**调用方自己的会话标签**（如 OpenCode 的 sessionID），服务端统一加 `external:`
+    //     前缀存进 store：既避免与 DSH 真实会话 id 撞车（外部调用方绝不能清掉 DSH 的条目），
+    //     也避免不同宿主之间撞车。省略 → `external:default`。
+    //   - task 省略 / null / 纯空白 → 清空该会话的任务文案（与 DSH 的 turn/start 同口径）。
+    // 失败一律 400（非法 JSON / 非对象 / 缺 state / state 不认识 / session 或 task 类型不对），
+    // 不做静默兜底——适配层写错必须能在日志里看见。
+    if (rest === 'external/work-status') {
+      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body ?? 'null');
+      } catch {
+        return { kind: 'json', status: 400, obj: { error: 'invalid JSON body' } };
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return { kind: 'json', status: 400, obj: { error: 'body 必须是 JSON 对象' } };
+      }
+      const o = parsed as Record<string, unknown>;
+      if (!Object.prototype.hasOwnProperty.call(o, 'state')) {
+        return { kind: 'json', status: 400, obj: { error: 'state 必填（六档之一或 null）' } };
+      }
+      if (o.session !== undefined && (typeof o.session !== 'string' || o.session.trim() === '')) {
+        return { kind: 'json', status: 400, obj: { error: 'session 必须是非空字符串' } };
+      }
+      if (o.task !== undefined && o.task !== null && typeof o.task !== 'string') {
+        return { kind: 'json', status: 400, obj: { error: 'task 必须是字符串或 null' } };
+      }
+      // 统一前缀：外部调用方拿不到（也不该拿到）DSH 内部会话的 key
+      const sessionLabel = typeof o.session === 'string' ? o.session.trim() : 'default';
+      const sessionId = `external:${sessionLabel}`;
+      if (o.state === null) {
+        cancelTerminalCleanup(sessionId);
+        workStatus.clear(sessionId);
+        publishWorkStatus();
+        return { kind: 'json', status: 200, obj: { ok: true } };
+      }
+      if (!isHostWorkStatusState(o.state)) {
+        return {
+          kind: 'json',
+          status: 400,
+          obj: { error: 'state 必须是 thinking / working / result / waiting / success / error 或 null' },
+        };
+      }
+      const task = typeof o.task === 'string' && o.task.trim() !== '' ? o.task.trim() : null;
+      // 每次写入都推进 seq：同档位重复上报（例如连续 tool/call）也要能更新 task；
+      // publishWorkStatus 会再按内容去重，不会因为 seq 推进就把动画刷成幻灯片。
+      workStatus.setState(sessionId, o.state, ++externalWorkSeq);
+      workStatus.setTask(sessionId, task);
+      publishWorkStatus();
+      // 终态只展示短暂窗口后自动清理：与 DSH 会话的 success/error 同一套生命周期。
+      if (o.state === 'success' || o.state === 'error') scheduleTerminalCleanup(sessionId);
+      else cancelTerminalCleanup(sessionId);
+      return { kind: 'json', status: 200, obj: { ok: true } };
     }
 
     // 余额：/dsh-pet-7340/balance（POST = 立即刷新一次并写入 S，返回 {ok}）

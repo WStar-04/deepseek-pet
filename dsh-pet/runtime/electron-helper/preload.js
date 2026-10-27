@@ -5,8 +5,9 @@
 //     差半只宠物宽，会让跨窗碰撞检测整体错位）。
 //     size/bottomPad = 碰撞站场登记用（静止宠物只发 set-bounds，靠它带上尺寸才能被其它
 //     飞行宠物撞到）；vx/vy = 当前速度（飞行中实时值，静止/拖拽 = 0）。
-//     marginL/marginT = 窗口左右/上余量（DIP）——主进程算宠物身体命中区要用。**不能再省**：
-//     上边距按气泡最大高度加高后余量不再四边相等，主进程按「窗口宽/4」反推会让命中区整体偏上。
+//     marginL/marginT/marginR/marginB = 宠物在窗口内的实际偏移（DIP）——主进程算身体命中区要用。
+//     **四个都要**：窗口贴边后左右/上下余量不再对称，只给 l/t 会让 stageW 算错、命中区整体偏移。
+//     上边距按气泡最大高度加高后余量也不再四边相等，主进程按「窗口宽/4」反推同样会偏上。
 //   - setInteractive：点击穿透翻转——窗口默认整窗穿透（透明像素不挡下层应用），
 //     renderer 在光标进/出宠物身体命中区时上报，主进程 setIgnoreMouseEvents 翻转。
 //   - setInputBusy：**我正在用这个窗口的鼠标输入**（拖拽中 / 菜单开着 / 对话弹窗开着），
@@ -21,8 +22,13 @@
 //       onPetHit：订阅「你被撞了」→ 用新初速 startThrow 抛出去（与浏览器 onHit 同语义）。
 const { contextBridge, ipcRenderer } = require('electron');
 
+// main.js 建窗时注入的平台标记：渲染端据此决定窗口夹取边界。
+
 contextBridge.exposeInMainWorld('petBridge', {
-  setBounds(x, y, width, height, boxX, boxY, size, bottomPad, vx, vy, marginL, marginT) {
+  // 渲染端按平台选窗口夹取边界：Linux/X11 的 WM 会把窗口夹回工作区（顶栏/任务栏也算墙），
+  // 其余平台不夹窗口，保持可覆盖任务栏/菜单栏、可拖出屏幕的既有手感。
+  platform: process.platform,
+  setBounds(x, y, width, height, boxX, boxY, size, bottomPad, vx, vy, marginL, marginT, marginR, marginB) {
     ipcRenderer.send('pet:set-bounds', {
       x,
       y,
@@ -36,6 +42,8 @@ contextBridge.exposeInMainWorld('petBridge', {
       vy,
       marginL,
       marginT,
+      marginR,
+      marginB,
     });
   },
   setInteractive(interactive) {

@@ -243,12 +243,19 @@ describe('/state + /balance —— 轮询统一状态与余额动作端点', () 
   test('since 与当前版本相同 → **真的挂起**，到点才返回（长轮询的核心行为）', async () => {
     const first = JSON.parse((await call('/dsh-pet-7340/state')).body) as { counter: number };
     const t0 = Date.now();
-    const r = await call('/dsh-pet-7340/state?since=' + first.counter + '&timeout=200');
-    const elapsed = Date.now() - t0;
-    assert.equal(r.status, 200);
-    // 没人写叶子 → 只能等超时。这条用例存在的意义就是证明"挂起"不是空话：
-    // 其余用例都用 timeout=0，走同一个分支但不会真的等。
-    assert.ok(elapsed >= 180, `应当真的挂起约 200ms，实测 ${elapsed}ms`);
+    // state.wait 的超时定时器是 unref() 的（生产里由 HTTP socket 钉住事件循环，宿主退出不必等它）；
+    // 这里的假 req/res 没有 socket，必须自己留一个 ref 句柄，否则 Node 会判定"无事可做"直接收进程。
+    const keepAlive = setInterval(() => {}, 20);
+    try {
+      const r = await call('/dsh-pet-7340/state?since=' + first.counter + '&timeout=200');
+      const elapsed = Date.now() - t0;
+      assert.equal(r.status, 200);
+      // 没人写叶子 → 只能等超时。这条用例存在的意义就是证明"挂起"不是空话：
+      // 其余用例都用 timeout=0，走同一个分支但不会真的等。
+      assert.ok(elapsed >= 180, `应当真的挂起约 200ms，实测 ${elapsed}ms`);
+    } finally {
+      clearInterval(keepAlive);
+    }
   });
 
   test('POST /balance 是动作端点：只回 { ok: true }，不返回余额数据', async () => {

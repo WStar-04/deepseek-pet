@@ -192,6 +192,33 @@ describe('spriteHitRect —— 与渲染端命中判定同源（否则两条通�
     assert.ok(r.left > 150 && r.left < 300);
     assert.ok(r.right > 300 && r.right < 450);
   });
+
+  test('非对称余量（贴左边缘 l=0 / r=462）：命中区仍在宠物身体上，不被 stageW 撑大一倍', () => {
+    // 窗口贴左屏边后：宠物在窗口左侧，右侧余量 462；stageW 必须 = width − l − r = 462（宠物宽）
+    const margins = { l: 0, t: 300, r: 462, b: 162 };
+    const r = spriteHitRect(bounds, margins);
+    const stageH = (462 * CANVAS_H) / STAGE_W;
+    const bottomPad = (stageH * (CANVAS_H - FEET_Y)) / CANVAS_H;
+    const near = (actual: number, expected: number) => Math.abs(actual - expected) < 0.01;
+    assert.ok(near(r.left, bounds.x + (200 / STAGE_W) * 462), 'left=' + r.left);
+    assert.ok(near(r.right, bounds.x + (440 / STAGE_W) * 462), 'right=' + r.right);
+    assert.ok(near(r.top, bounds.y + 300 + bottomPad + (50 / CANVAS_H) * stageH), 'top=' + r.top);
+    assert.ok(near(r.bottom, bounds.y + 300 + bottomPad + (335 / CANVAS_H) * stageH), 'bottom=' + r.bottom);
+    // 身体左缘 = 144.375；只看 l（旧算法 stageW=924）会算到 288.75，命中区整体右移半个身位
+    assert.ok(near(r.left, bounds.x + 144.375));
+    assert.equal(pointerZone(bounds, { x: r.left + 1, y: r.top + 1 }, margins), 'body');
+    assert.equal(pointerZone(bounds, { x: bounds.x + 10, y: bounds.y + 400 }, margins), 'margin');
+    assert.equal(pointerZone(bounds, { x: bounds.x + 800, y: bounds.y + 400 }, margins), 'margin');
+  });
+
+  test('非对称余量（贴右边缘 l=462 / r=0）：命中区跟着宠物滑到窗口右侧', () => {
+    const margins = { l: 462, t: 300, r: 0, b: 162 };
+    const r = spriteHitRect(bounds, margins);
+    assert.ok(Math.abs(r.left - (bounds.x + 462 + 144.375)) < 0.01, 'left=' + r.left);
+    assert.ok(Math.abs(r.right - (bounds.x + 462 + 317.625)) < 0.01, 'right=' + r.right);
+    assert.equal(pointerZone(bounds, { x: r.left + 1, y: r.top + 1 }, margins), 'body');
+    assert.equal(pointerZone(bounds, { x: bounds.x + 100, y: bounds.y + 400 }, margins), 'margin');
+  });
 });
 
 describe('菜单/聊天框只占控件矩形，不吞掉其它应用点击', () => {

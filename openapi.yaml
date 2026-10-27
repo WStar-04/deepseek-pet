@@ -206,6 +206,54 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /dsh-pet-7340/external/work-status:
+    post:
+      tags: [Action]
+      operationId: externalWorkStatus
+      summary: 外部宿主写入工作状态
+      description: |
+        给**不是 DSH 会话**的宿主（OpenCode / Claude Code / Codex 等）一个稳定的工作状态入口。
+        宿主把请求写进同一个 `WorkStatusStore`，因此优先级聚合（`waiting > error > working >
+        thinking > result > success`）、任务文案、终态清理与前端渲染都与 DSH 原生会话完全一致；
+        适配层不需要自己拼 `/anim` 或气泡。
+
+        - `state` 必填，取六个档位之一，或 `null`。`null` **清掉该外部会话**（不是"设为空闲档"）：
+          其他活跃会话会立刻按优先级浮上来。
+        - `session` 是调用方自己的会话标签（例如 OpenCode 的 `sessionID`）。宿主统一存成
+          `external:<session>`，既避免与 DSH 真实会话 id 撞车（外部调用方不可能清掉 DSH 条目），
+          也避免不同宿主之间撞车。省略 → `external:default`。
+        - `task` 省略 / `null` / 纯空白 = 清空该会话的任务文案；非空字符串会覆盖旧文案。
+          （OpenCode 适配器目前不写 task，气泡显示配置里的 `workStatusTexts` 档位文案。）
+        - `success` / `error` 与 DSH 会话一样只展示约 60 秒，之后自动清理。
+        - 本端点只写内存中的 S，不触发模型、不读磁盘；成功只回 `{ ok: true }`，状态本身从
+          `GET /state` 的 `sections.workStatus` 读取。
+
+        独立模式（不启动 DSH）同样可用——这正是外部宿主接入的主要形态。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExternalWorkStatusRequest"
+      responses:
+        "200":
+          description: 状态已写入（或该外部会话已清空）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: |
+            请求非法：JSON 解析失败、body 不是对象、缺 `state`、`state` 不是六档之一 / `null`、
+            `session` 不是非空字符串、`task` 不是字符串 / `null`。
+            响应体是 `{ "error": "..." }`，附明确原因。
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
   /dsh-pet-7340/balance:
     post:
       tags: [Action]
@@ -2076,6 +2124,35 @@ components:
             `approval/asked`、`turn/end`）聚合后写入。
           oneOf:
             - $ref: "#/components/schemas/WorkStatusSnapshot"
+            - type: "null"
+
+    ExternalWorkStatusRequest:
+      type: object
+      required: [state]
+      description: |
+        外部宿主上报的一次工作状态。`state: null` 表示清掉 `session` 对应的条目。
+      properties:
+        state:
+          description: |
+            六档工作状态之一；`null` = 清空该外部会话（不是"空闲档"）。
+            档位顺序与配置 `animations.events.workStatus` 数组索引严格一致。
+          oneOf:
+            - type: string
+              enum: [thinking, working, result, waiting, success, error]
+            - type: "null"
+        session:
+          description: |
+            调用方自己的会话标签（例如 OpenCode 的 `sessionID`）。宿主统一加 `external:` 前缀后
+            存进 WorkStatusStore；省略 → `external:default`。空串 / 纯空白 → HTTP 400。
+            不要自己加 `external:` 前缀（加了也只会变成 `external:external:...`，不会撞车）。
+          type: string
+          minLength: 1
+          example: opencode:ses_123
+        task:
+          description: |
+            任务详情文案；省略 / `null` / 纯空白 = 清空旧文案。非字符串 → HTTP 400。
+          oneOf:
+            - type: string
             - type: "null"
 
     WorkStatusSnapshot:

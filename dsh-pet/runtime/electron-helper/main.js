@@ -52,6 +52,9 @@ const { readFileSync, writeFileSync } = require('node:fs');
 const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
 const { decideWindowIgnore, pointerZone } = require('./pointer-target.js');
+// Linux/X11 的全局光标位置：Electron 在 Linux 上不实现 forward 转发，兜底轮询不能只靠
+// screen.getCursorScreenPoint()（X11 下它会停在应用最后一次收到鼠标事件时的旧值）。
+const { startLinuxPointerWatcher } = require('./linux-pointer.js');
 // 置顶看门狗：WS_EX_TOPMOST 只是样式位，不等于窗口真的在置顶带（见 topmost-watchdog.js 头部）
 const { TOPMOST_WATCHDOG_TICK_MS, shouldReassertTopmost } = require('./topmost-watchdog.js');
 // 宿主存活判定（issue #56：宿主退出 → 管道断开 → 自己退，绝不弹框、绝不留僵尸）
@@ -289,9 +292,9 @@ const windows = new Map();
 const lastRequestedBounds = new Map();
 
 /**
- * win.id -> 渲染端上报的窗口余量 `{ l, t }`（DIP）。
- * 上边距按气泡最大高度加高后**余量不再四边相等**，命中区不能再按「窗口宽/4」反推——
- * 这里存下来交给 pointer-target 的 spriteHitRect（见那里的注释）。
+ * win.id -> 渲染端上报的窗口余量 `{ l, t, r, b }`（DIP）：宠物在窗口内的实际偏移。
+ * 窗口贴边后余量不再对称（窗口留在屏内、宠物在窗口内滑到边上），命中区必须按四个余量算——
+ * 只给 l/t 会让 stageW 算错（见 pointer-target.js 的 spriteHitRect）。
  */
 const winMargins = new Map();
 
@@ -336,6 +339,34 @@ function setWindowIgnore(win, ignore) {
 
 /** 兜底通道的光标轮询间隔（ms，与 issue #55 报告者实测值一致） */
 const POINTER_POLL_MS = 60;
+
+/**
+ * Linux 全局光标监听（undefined = 还没试过；null = 不可用，回落 screen.getCursorScreenPoint）。
+ *
+ * 为什么需要它：Windows/macOS 上 `setIgnoreMouseEvents(true, { forward: true })` 会把鼠标移动
+ * 转发进渲染端，渲染端先翻转可交互、再收真正的 click；Linux 上 Electron 没有实现这条转发
+ * （见 linux-pointer.js 头部）。而 `screen.getCursorScreenPoint()` 在 X11 下又是 Chromium 缓存值，
+ * 穿透窗口收不到事件就永远不刷新——两条路一起断，宠物自然拖不动。这里用 xinput 的 XI2 全局
+ * 事件流独立取光标位置，让 pointer-target.js 那套兜底判定真正跑起来。
+ */
+let linuxPointer;
+function ensureLinuxPointer() {
+  if (linuxPointer !== undefined) return linuxPointer;
+  if (process.platform !== 'linux' || process.env.DSH_PET_DISABLE_XINPUT === '1') {
+    linuxPointer = null;
+    return null;
+  }
+  const nativeScale = screen.getPrimaryDisplay().scaleFactor || 1;
+  linuxPointer = startLinuxPointerWatcher({
+    // XI2 root 坐标是物理像素；线性化开启时 DIP = 物理（forced=1），关闭时按 Electron 原生缩放换算。
+    scale: FORCED_SCALE > 0 ? FORCED_SCALE : nativeScale,
+    onError: (error) => {
+      console.error('[dsh-pet-desktop-helper] xinput pointer watcher unavailable:', error.message);
+    },
+  });
+  if (linuxPointer) console.error('[dsh-pet-desktop-helper] linux pointer watcher started (xinput test-xi2)');
+  return linuxPointer;
+}
 /** 冒烟期间暂停兜底轮询：它按**真实光标**翻转 windowIgnore，会干扰冒烟对渲染端通道的断言 */
 let pointerFallbackPaused = false;
 
@@ -404,6 +435,7 @@ function deskGeometry() {
 }
 
 function createPetWindows() {
+  ensureLinuxPointer();
   const geo = deskGeometry();
   const area = geo.hull;
   const configUrl = process.env.DSH_PET_CONFIG_URL || 'http://127.0.0.1:3080/dsh-pet-7340/config';
@@ -480,7 +512,8 @@ function createPetWindows() {
       if (b.width < 8 || b.height < 8) return; // 尺寸还没落定（renderer 首帧上报前）
       const ignoring = windowIgnore.get(win.id) !== false;
       const busy = inputBusy.get(win.id) === true;
-      const point = screen.getCursorScreenPoint();
+      // Linux：xinput 的 XI2 全局坐标；其它平台或 xinput 不可用时回落 Electron 的原生取值。
+      const point = linuxPointer?.getPoint() ?? screen.getCursorScreenPoint();
       // 余量区停留计时：只在"非 busy 且在余量区"时累加，离开余量区即清零；busy 期间不累加。
       const mg = winMargins.get(win.id);
       const zone = pointerZone(b, point, mg);
@@ -805,10 +838,20 @@ app.whenReady().then(() => {
       lastRequestedBounds.set(win.id, key);
       win.setContentBounds(rect, false);
     }
-    // 窗口余量（左右/上）：命中区判定的依据，余量四边不再相等（上边距按气泡最大高度加高）
+    // 窗口余量（宠物在窗口内的实际偏移）：命中区判定的依据。贴边后 l/r、t/b 不再对称，
+    // 四个都要存；旧渲染端只发 l/t 时右/下回退为 l/t（与改造前口径一致）。
     const ml = Number(bounds?.marginL);
     const mt = Number(bounds?.marginT);
-    if (Number.isFinite(ml) && Number.isFinite(mt)) winMargins.set(win.id, { l: ml, t: mt });
+    const mr = Number(bounds?.marginR);
+    const mb = Number(bounds?.marginB);
+    if (Number.isFinite(ml) && Number.isFinite(mt)) {
+      winMargins.set(win.id, {
+        l: ml,
+        t: mt,
+        r: Number.isFinite(mr) ? mr : ml,
+        b: Number.isFinite(mb) ? mb : mt,
+      });
+    }
     // 碰撞站场：位置必须用**包围盒左上角**（renderer 显式上报 boxX/boxY）——
     // 窗口坐标 = 包围盒 − margin（半只宠物宽），直接拿窗口坐标会让跨窗检测整体错位
     const petId = [...windows.keys()].find((id) => windows.get(id) === win);
@@ -1209,6 +1252,7 @@ app.whenReady().then(() => {
 // 注意宿主改 display 时是 SIGTERM/SIGKILL 硬杀（helper-process.ts），Windows 上那是
 // TerminateProcess、拦不到，所以这条只覆盖优雅退出（窗口全关、宿主存活探测判定退出等）。
 app.on('before-quit', () => {
+  linuxPointer?.stop();
   if (!tray) return;
   try {
     tray.destroy();
@@ -1217,6 +1261,16 @@ app.on('before-quit', () => {
   }
   tray = null;
 });
+
+// 宿主停 helper 走 SIGTERM（helper-process.ts 的 stop）：Node 默认不保证触发 before-quit，
+// 这里显式收尾 xinput 子进程，避免每次重启桌宠都留下一个 `xinput test-xi2 --root` 孤儿。
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.once(signal, () => {
+    linuxPointer?.stop();
+    app.quit();
+  });
+}
+process.once('exit', () => linuxPointer?.stop());
 
 app.on('window-all-closed', () => {
   // 托盘常驻：桌面上没有宠物也要留着（否则「全关掉」就再也切不回来，见 index.ts 的 desktopModeEverActive）

@@ -77,6 +77,31 @@ dsh-pet 的宿主半侧向 DSH 自己的 Web 服务注册了**一条前缀路由
 | `GET /dsh-pet-7340/font/{file}` | 字体文件 |
 | `GET /dsh-pet-7340/pic/{file}` | 通知图标（`pic/`）与表情包（`pic/memes/{素材根}/`，按宠物归属） |
 
+## 七、外部宿主工作状态
+
+| 接口 | 功能 |
+| --- | --- |
+| `POST /dsh-pet-7340/external/work-status` | **外部宿主写入工作状态**：OpenCode / Claude Code / Codex 等非 DSH 宿主把会话活动映射成六档状态，复用现有的工作状态聚合、气泡与终态清理 |
+
+请求体：
+
+```jsonc
+{
+  "state": "working",       // 必填：thinking / working / result / waiting / success / error，或 null
+  "session": "opencode:ses_123", // 可选：调用方自己的会话标签；宿主统一加 external: 前缀
+  "task": "修复登录逻辑"     // 可选：任务文案；省略 / null / 纯空白 = 清空
+}
+```
+
+- `state: null` **清掉该外部会话**（不是"设为空闲档"）：其他活跃会话会立刻按优先级浮上来。
+- `session` 省略 → `external:default`。服务端加前缀是为了让外部调用方**不可能**清掉 DSH 真实
+  会话的条目；不同宿主之间也不会撞车。
+- `success` / `error` 与 DSH 会话一样只展示约 60 秒，之后自动清理。
+- 非法 JSON、缺 `state`、状态/字段类型不对 → **HTTP 400**（不做静默兜底）。
+- 成功只回 `{ "ok": true }`；状态本身从 `GET /state` 的 `sections.workStatus` 读。
+
+OpenCode 的现成适配器在仓库 `.opencode/plugins/dsh-pet/`（自动加载），说明见该目录的 README。
+
 ---
 
 ## state 详解
@@ -116,8 +141,12 @@ dsh-pet 的宿主半侧向 DSH 自己的 Web 服务注册了**一条前缀路由
 `/dsh-pet-7340` 下的端点形状不变，但三个依赖 DSH 的接口**明确降级**（结构化失败，不假装成功）：
 `POST /whisper`、`POST /chat` 回 `reason: 'provider-missing'`，`POST /balance` 回 `reason: 'unsupported'`。
 
+工作状态是例外：独立模式没有 DSH 的 `session/event`，但 `POST /external/work-status` 仍然可用，
+外部宿主正是通过它驱动六档动画与气泡（OpenCode 适配器已内置；Claude Code / Codex 可复用同一端点）。
+
 ## 相关
 
 - [`openapi.yaml`](openapi.yaml) —— 完整契约（OpenAPI 3.1，可直接导入 Swagger UI / Postman）
+- [`.opencode/plugins/dsh-pet/README.md`](.opencode/plugins/dsh-pet/README.md) —— OpenCode 适配器的启用、地址配置与事件映射
 - [`tools/api-tester.html`](tools/api-tester.html) —— 桌宠控制台：扮演第三方消费方的示例页面，
   可直观试用上述接口（用 `node tools/api-tester.cjs` 启动，它会带上本地代理解决跨域）

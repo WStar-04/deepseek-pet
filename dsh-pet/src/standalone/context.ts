@@ -15,7 +15,8 @@
  *     → 余额路由命中"未登记接口"分支 → `{ ok: false, reason: 'unsupported' }`
  *   - `credentials.resolve()` → 恒 `undefined` → 凭证类失败走 `credential-missing`
  *   - `llm.*` → 模型清单为空；生成调用直接抛错 → 碎碎念/对话明确失败，不会静默
- *   - `on(...)` → 不订阅任何事件：独立模式没有 DSH 会话，工作状态因此保持空闲
+ *   - `on(...)` → 不订阅任何事件：独立模式没有 DSH 会话；工作状态由
+ *     `POST /external/work-status` 驱动，没人写时保持空闲
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
@@ -122,7 +123,7 @@ export function createStandaloneContext(options: StandaloneContextOptions): Stan
         return undefined;
       }
     },
-    /** 独立模式没有 DSH 会话事件：不订阅，工作状态保持空闲 */
+    /** 独立模式没有 DSH 会话事件：不订阅；外部宿主通过 /external/work-status 写状态 */
     on(): () => void {
       return () => {};
     },

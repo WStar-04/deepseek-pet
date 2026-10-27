@@ -103,3 +103,71 @@ export const regionHoleRatio = (rects: Rect[]): number => {
 /** 把一组矩形整体平移（屏幕坐标 → 视口相对坐标：减去 VIEW 原点） */
 export const translateRects = (rects: Rect[], dx: number, dy: number): Rect[] =>
   rects.map((r) => ({ x: r.x + dx, y: r.y + dy, width: r.width, height: r.height }));
+
+/** 桌面宠物窗口的四周余量（l/t/r/b，窗口局部坐标）。窗口尺寸 = 宠物包围盒 + 余量。 */
+export interface WindowMargins {
+  l: number;
+  t: number;
+  r: number;
+  b: number;
+}
+
+/** 窗口落点 + 宠物在窗口内的实际偏移（窗口被夹到屏内后，偏移不再等于配置余量）。 */
+export interface PetWindowPlacement {
+  x: number;
+  y: number;
+  margins: WindowMargins;
+}
+
+/**
+ * 计算宠物窗口的落点：窗口**始终夹在当前屏内**，宠物在窗口内的偏移随之变化。
+ *
+ * 为什么不能只让窗口跟着宠物走：Linux/X11 的窗口管理器会把窗口夹回工作区（实测 GNOME
+ * 请求负坐标 → 落在 0；请求超出右下 → 落在「工作区 − 窗口尺寸」）。窗口 = 宠物 + 四周
+ * 半只宠物的透明余量，夹边后宠物离屏幕边缘还差一整圈余量，拖拽范围被硬生生缩小。
+ *
+ * 解法是「窗口贴边、宠物在窗口内滑到边上」：窗口位置由本函数夹取，返回的 margins 是宠物
+ * 相对窗口左上角的真实偏移（贴左/上边时可以是 0，甚至负数——宠物被拖出屏幕时由窗口裁掉）。
+ * 这样窗口不必离开工作区，宠物仍能到达屏幕任意边缘；菜单/气泡的夹取也继续按真实窗口算。
+ *
+ * @param o.x/o.y 宠物包围盒左上角（与 area 同坐标系）
+ * @param o.width/o.height 宠物包围盒尺寸（不含窗口余量）
+ * @param o.windowWidth/o.windowHeight 窗口尺寸（宠物包围盒 + base 余量）
+ * @param o.base 配置的四周余量：决定窗口尺寸，也是宠物在窗口内居中时的偏移
+ * @param o.area 当前屏的工作区；null/零尺寸表示不夹取（保持原行为）
+ */
+export const placePetWindow = (o: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  windowWidth: number;
+  windowHeight: number;
+  base: WindowMargins;
+  area: Rect | null;
+}): PetWindowPlacement => {
+  const desiredX = o.x - o.base.l;
+  const desiredY = o.y - o.base.t;
+  let x = desiredX;
+  let y = desiredY;
+  if (o.area && o.area.width > 0 && o.area.height > 0) {
+    // 窗口比屏还大时 max < area.x：仍以 area.x 为左上角，超出部分由窗口自身裁掉
+    const maxX = o.area.x + o.area.width - o.windowWidth;
+    const maxY = o.area.y + o.area.height - o.windowHeight;
+    x = Math.min(Math.max(desiredX, o.area.x), Math.max(o.area.x, maxX));
+    y = Math.min(Math.max(desiredY, o.area.y), Math.max(o.area.y, maxY));
+  }
+  const l = o.x - x;
+  const t = o.y - y;
+  return {
+    x,
+    y,
+    margins: {
+      l,
+      t,
+      // 右/下余量取窗口剩余空间：l+r 恒等于「窗口尺寸 − 宠物尺寸」，命中区换算不会漂
+      r: o.windowWidth - o.width - l,
+      b: o.windowHeight - o.height - t,
+    },
+  };
+};

@@ -93,6 +93,7 @@ macOS 的 Safari/WKWebView 下透明动画需用 `.mov` 素材，三步：
 
 - **插件安装**：桌面版在应用内「插件管理」页装 `dsh-pet`（见上方「快速开始（安装插件）」）
 - **依赖 Electron**：首次拉起时自动探测（`DSH_PET_ELECTRON_PATH` 环境变量 → 本机 electron 包 → `~/.dsh/electron/` 落地路径），找不到会通过官方 @electron/get 自动下载到 `~/.dsh/electron/`（`npm run ensure:electron` 可手动触发）；Electron 不可用时仅日志告警，**不影响浏览器形态**
+- **Linux/X11 拖拽依赖 `xinput`**：Electron 在 Linux 上不会把点击穿透窗口的鼠标移动转发进渲染端，桌面助手改用 `xinput test-xi2 --root` 读取全局光标位置，才能先翻转可交互再拖动。Debian/Ubuntu 可装 `sudo apt install xinput`；缺失时自动回落到旧行为（Linux 上可能无法悬停/拖动），**不影响浏览器形态**。Wayland 会话需有 `DISPLAY`（XWayland）
 - **开关 = 每只宠物的 `display` 字段（pets 必填，四个值）**：
   - `web` = 仅浏览器 overlay / `desktop` = 仅桌面模式 / `both` = 两者都显示 / `none` = 都不显示
   - 桌面模式渲染 `display` 含 `desktop` 的**全部**宠物（多开同屏，与浏览器一致）；大小/位置各自读自己的配置
@@ -114,11 +115,20 @@ dsh-pet-standalone --port 3100
 npm run build && npm run standalone   # 仓库里（先构建）
 ```
 
-- **能用**：动画链、点击/拖拽/甩抛、右键菜单、多开、自定义动画与表情包、pet pack。
+- **能用**：动画链、点击/拖拽/甩抛、右键菜单、多开、自定义动画与表情包、pet pack；**外部宿主工作状态**
+  （`POST /dsh-pet-7340/external/work-status`，OpenCode 适配器已内置；Claude Code / Codex 可复用同一端点）。
 - **不可用**：余额、碎碎念、对话、系统通知——返回带 `reason` 的结构化失败，不假装成功。
 - **配置**：与 DSH 同一份（`$DSH_HOME/dsh-pet/main-config.jsonc` → 包内默认）。
 - **只显示 `display` 含 `desktop`/`both` 的实例**；端口默认 3080；`Ctrl+C` 或 `POST /shutdown` 退出。
 - **与 DSH 内运行可同时开**，但共用 `%APPDATA%\dsh-pet-electron-helper`，可能互相踩缓存（仅告警）。
+
+## 🔗 联动 OpenCode（仓库内适配器）
+
+仓库内置 OpenCode V2 适配器，把 OpenCode 的会话活动映射成桌宠的六档工作状态（思考 / 工作 / 整理 / 等待 / 成功 / 出错）；独立模式即可使用，不需要启动 DSH。
+
+- 适配器说明与最短路径：[`.opencode/plugins/dsh-pet/README.md`](https://github.com/PC2005-cloud/dsh-pet/blob/main/.opencode/plugins/dsh-pet/README.md)
+- 完整部署、事件映射与验证：[根 README 的「联动 OpenCode」](https://github.com/PC2005-cloud/dsh-pet/blob/main/README.md#opencode) 一节
+- 端点是 `POST /dsh-pet-7340/external/work-status`；OpenCode 适配器随仓库提供，不在 npm 包的 `files` 清单里
 
 ## ⌨️ 斜杠命令
 

@@ -15,6 +15,8 @@
 
 一只住在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 里的桌面宠物：待机呼吸、随机动作（打瞌睡、玩魔方、吃火锅……）、左右转向、屏幕漫游、点击 Q 弹、拖拽甩抛反弹、右键菜单点播——一百余个手绘风透明动画随时无缝衔接；还能跟随 DSH 会话事件切换工作状态动画、按档位播放余额动画 + 头顶气泡、碎碎念与对话聊天、窗口失焦时弹系统通知。可多开同屏，能脱离浏览器住上**桌面**（透明置顶小窗），也能自己添加**全新宠物种类**（pet pack）。
 
+> 本仓库是 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet) 的 fork：当前已接入 OpenCode 工作状态联动，后续计划接入 Claude Code / Codex 等外部宿主。
+
 这不是一个普通插件，而是**完整的三件套项目**：
 
 ```
@@ -24,9 +26,22 @@ AI 生成动画的配方     源视频 → 透明动画的管线    运行在 DS
 
 任何人 clone 本仓库，都可以**从零生成自己的桌面宠物**——换角色、换动作、换风格，全流程可复现。
 
+> **快速跳转**：[部署与安装](#deploy) · [功能简述](#features) · [联动 OpenCode](#opencode) · [配置](#config)
+
 ---
 
-## 快速开始（安装插件）
+<a id="deploy"></a>
+
+## 🚀 部署与安装
+
+一张表先选形态：
+
+| 形态 | 适合 | 安装入口 |
+| --- | --- | --- |
+| DSH 桌面应用（Electron） | 日常在桌面应用里用 | 应用内「插件管理」填 `dsh-pet` |
+| `dsh web` | 在浏览器里用 DSH | `dsh plugin --profile web add dsh-pet` |
+| 独立运行 | 不打开 DSH，给 OpenCode / 脚本用 | `npm i -g dsh-pet` 后跑 `dsh-pet-standalone` |
+| 从源码 | 开发、或想用仓库里的最新功能 | clone → `npm install && npm run build` → `file:` 安装 |
 
 装法取决于你在用哪个 DSH：
 
@@ -71,7 +86,7 @@ npm run build       # 必须手动跑一次（克隆后 npm install 不再自动
 
 # ④ 安装到 DSH（file: 指向**插件目录**——上面 cd 进去的那一层，用构建好的 lib）
 #    --profile 填实际在用的那个：dsh web → web；
-#    桌面应用（Electron 版）改用应用内「插件管理」安装，见上方快速开始
+#    桌面应用（Electron 版）改用应用内「插件管理」安装，见上方「部署与安装」
 dsh plugin --profile web add file:D:/path/to/dsh-pet/dsh-pet
 ```
 
@@ -107,7 +122,11 @@ dsh plugin --profile web add file:D:/path/to/dsh-pet/dsh-pet
 - **想立刻用上未发布的修复**：按上面的「从源码安装」把插件指向本地仓库即可；注意**宿主半侧**的代码改动要**重开 DSH** 才生效（浏览器半侧刷新页面即可）。
 - **报 bug 时请带上**：插件版本、`dsh` 版本、操作系统、复现步骤（有日志或截图更好）。
 
-## 插件功能
+<a id="features"></a>
+
+## ✨ 功能简述
+
+一句话：一只住在 DSH 网页 / 桌面（或独立透明窗）里的透明动画宠物，会自己玩、会回应你的点击与拖拽，也会跟着 DSH / OpenCode 的会话状态切工作动画；余额、碎碎念、对话、系统通知都是可选能力。
 
 - **纯粹的桌宠**：不做天气、监控等无关功能，不碰 DSH 内核；可选能力只有下面这些（余额 / 碎碎念 / 对话 / 工作状态 / 系统通知）
 - **动画链**：每个动画（含待机）播完即按权重选下一个（默认 idle 10 / turn 5 / move 5 + 分类权重，`config.jsonc` 可调），首尾相接
@@ -171,8 +190,11 @@ dsh-pet-standalone --port 3100
 npm run build && npm run standalone   # 仓库里（先构建）
 ```
 
-- **能用**：动画链、点击/拖拽/甩抛、右键菜单、多开、自定义动画与表情包、pet pack。
+- **能用**：动画链、点击/拖拽/甩抛、右键菜单、多开、自定义动画与表情包、pet pack；**外部宿主工作状态**
+  （`POST /dsh-pet-7340/external/work-status`，OpenCode 适配器已内置；Claude Code / Codex 可复用同一端点）。
 - **不可用**：余额、碎碎念、对话、系统通知——返回带 `reason` 的结构化失败（见 [`API.md`](API.md)）。
+- **OpenCode 现成适配器**：仓库 `.opencode/plugins/dsh-pet/`（自动加载），独立模式跑在
+  `127.0.0.1:3080` 即可；端口不同用 `DSH_PET_URL` 指定。详见下方 [联动 OpenCode](#opencode) 与该目录的 README。
 - **配置**：与 DSH 同一份（`$DSH_HOME/dsh-pet/main-config.jsonc` → 包内默认）。
 - **只显示 `display` 含 `desktop`/`both` 的实例**；端口默认 3080；`Ctrl+C` 或 `POST /shutdown` 退出。
 - **与 DSH 内运行可同时开**，但共用 `%APPDATA%\dsh-pet-electron-helper`，可能互相踩缓存（仅告警）。
@@ -201,6 +223,129 @@ npm run build && npm run standalone   # 仓库里（先构建）
 - **档位动画**：`animations.events.workStatus` 数组，索引即档位（勿在中间插入新档，只可追加末尾）
 - **气泡文案**：`workStatusTexts` 每档可配多句随机，任务详情（todo）优先
 - **档位候选数组**：任意档位槽位可写 `string | string[]`——数组 = 档内随机抽 1，循环播放自动轮换、避免连播同一段（余额 / 碎碎念档位同样适用）
+- **非 DSH 宿主**：OpenCode / Claude Code / Codex 等通过 `POST /dsh-pet-7340/external/work-status`
+  写入同一份状态（六档 + 可选 task + 会话标签），优先级聚合、终态清理和气泡完全复用。
+  仓库内置 OpenCode 适配器，详见下方 [联动 OpenCode](#opencode)；Claude Code / Codex 的适配器尚未实现，后续可复用同一端点。
+
+<a id="opencode"></a>
+
+## 🔗 联动 OpenCode
+
+仓库内置 OpenCode V2 适配器（`.opencode/plugins/dsh-pet/`）：订阅 OpenCode 的公共事件流，把「开始执行 / 调工具 / 等权限 / 完成 / 报错」映射成桌宠的六档工作状态。桌宠侧复用 DSH 原生联动的 `WorkStatusStore`——优先级聚合、气泡文案、终态清理、浏览器 / 桌面渲染全部同一条路径，适配器只负责「翻译 + 上报」。
+
+> 适配器随仓库提供，不在 npm 包的 `files` 清单里；只用 `npm i dsh-pet` 安装的话，需要 clone 本仓库或手动复制 `.opencode/plugins/dsh-pet/` 到项目里。
+
+### 联动效果
+
+- **六档动画**：`thinking` 思考 / `working` 工作 / `result` 整理 / `waiting` 等待 / `success` 成功 / `error` 出错；非终态循环播、气泡常驻，成功 / 出错播一遍、气泡 10 秒收起（状态条目约 60 秒后清理）
+- **多会话隔离**：状态按 `external:opencode:<sessionID>` 独立存储，多个 OpenCode 会话并行时只展示优先级最高的活跃会话；中断 / 结束只清自己那条，不会误伤其他会话
+- **零模型成本**：只读事件、不调用 LLM，不生成碎碎念 / 对话；桌宠没开、端口不对或请求超时都会静默忽略，绝不打断 OpenCode 的事件流
+- **与 DSH 并存**：同一只宠物可以同时接 DSH 会话和 OpenCode，状态按同一套优先级聚合
+
+### 部署与启用
+
+前置条件：
+
+1. 桌宠侧已包含 `POST /dsh-pet-7340/external/work-status`（本仓库源码已实现；旧版 npm 包可能还没有，需要从源码构建）
+2. Node.js ≥ 22.12（与插件 `engines` 一致）
+3. 至少一只宠物开启工作状态：`workStatusEnabled: true`（默认开启，配置在 `$DSH_HOME/dsh-pet/main-config.jsonc`）；独立模式下 `display` 需为 `desktop` 或 `both`（独立模式没有浏览器 overlay）
+
+**① 启动桌宠（推荐独立模式，不需要 DSH）**
+
+```sh
+cd dsh-pet
+npm install
+npm run build
+node lib/standalone.js --port 3080
+
+# 或者全局安装后（发布版包含该端点时）：
+# npm i -g dsh-pet
+# dsh-pet-standalone --port 3080
+```
+
+独立模式默认监听 `127.0.0.1:3080`，端口被占用会自动顺延（控制台会打印实际端口）。`node lib/standalone.js --check` 可先体检配置与 Electron。
+
+**② 让 OpenCode 加载适配器**
+
+OpenCode V2 会自动加载项目根目录 `.opencode/plugins/`；在仓库根目录启动 OpenCode 即可，本仓库已经放好，重启 OpenCode 或执行：
+
+```sh
+opencode reload
+```
+
+只想给当前项目用：保持 `.opencode/plugins/dsh-pet/` 不动。想给所有项目用：把整个 `.opencode/plugins/dsh-pet/` 复制到 `~/.config/opencode/plugins/`（Windows：`%USERPROFILE%\.config\opencode\plugins\`）。
+
+**③ 指定桌宠地址（不是 3080 时）**
+
+```sh
+DSH_PET_URL=http://127.0.0.1:3100 opencode
+```
+
+Windows PowerShell：
+
+```powershell
+$env:DSH_PET_URL = 'http://127.0.0.1:3100'
+opencode
+```
+
+也可以在 `opencode.jsonc` 里手动声明（自动加载时不要重复添加）：
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "./.opencode/plugins/dsh-pet",
+      "options": { "url": "http://127.0.0.1:3100" }
+    }
+  ]
+}
+```
+
+> 桌宠跑在 DSH 内时，把 `DSH_PET_URL` 指向 DSH Web 服务地址（默认 `http://127.0.0.1:3080`，以实际 `dsh web` 端口为准）。
+
+### 事件映射
+
+| OpenCode 事件 | 桌宠档位 |
+| --- | --- |
+| `session.execution.started` / `session.step.started` | `thinking` 思考 |
+| `session.tool.called` | `working` 工作 |
+| `session.tool.success` | `result` 整理 |
+| `session.tool.failed` / `session.step.failed` | `error` 出错 |
+| `permission.asked` | `waiting` 等待 |
+| `session.execution.succeeded` | `success` 成功 |
+| `session.execution.failed` | `error` 出错 |
+| `session.execution.interrupted` | 清空该会话 |
+| 其他（含 `session.idle`） | 忽略 |
+
+### 验证
+
+```sh
+opencode plugin list                 # OpenCode 是否加载了 dsh-pet（应看到 dsh-pet / local）
+curl -s http://127.0.0.1:3080/health # 桌宠服务是否在跑
+curl -s http://127.0.0.1:3080/dsh-pet-7340/state | jq '.sections.workStatus'
+
+# 手动写一条状态（session 由宿主统一加 external: 前缀）
+curl -s -X POST http://127.0.0.1:3080/dsh-pet-7340/external/work-status \
+  -H 'content-type: application/json' \
+  -d '{"state":"working","session":"manual:demo"}'
+
+# 清掉
+curl -s -X POST http://127.0.0.1:3080/dsh-pet-7340/external/work-status \
+  -H 'content-type: application/json' \
+  -d '{"state":null,"session":"manual:demo"}'
+```
+
+### 边界
+
+- **只接工作状态**：不生成碎碎念、不弹 `broadcast` 气泡、不控制动画池；这些能力仍由 DSH 提供，独立模式下不可用
+- **没有任务清单**：OpenCode 事件里没有 DSH `todo/write` 那种任务详情，气泡显示配置里的 `workStatusTexts` 档位文案
+- **硬杀进程**：正常卸载会清理适配器见过的所有会话；`kill -9` 不走 cleanup，非终态可能残留，重启独立模式或手动 `state: null` 即可清空
+- **只在本机**：端点和独立模式服务只监听 `127.0.0.1`、无鉴权，不要把端口转发到公网
+
+完整适配器说明见 [`.opencode/plugins/dsh-pet/README.md`](.opencode/plugins/dsh-pet/README.md)；接口契约见 [`API.md`](API.md) 与 [`openapi.yaml`](openapi.yaml)。
+
+<a id="config"></a>
 
 ## ⚙️ 配置（大小 / 位置 / 多开）
 
@@ -544,7 +689,7 @@ python encode_thumbs.py      # 转码 640×360 播放变体 → step04/
 cp step04/*.webm dsh-pet/assets/webm/   # 播放格式（VP9-alpha）
 
 # 本地安装插件（--profile 填实际在用的那个：dsh web → web；
-# 桌面应用（Electron 版）改用应用内「插件管理」，见「快速开始（安装插件）」；
+# 桌面应用（Electron 版）改用应用内「插件管理」，见「部署与安装」；
 # file: 指向插件目录 dsh-pet/dsh-pet）
 dsh plugin --profile web add file:D:/path/to/dsh-pet/dsh-pet
 ```

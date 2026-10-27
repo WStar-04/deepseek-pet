@@ -20,6 +20,7 @@ import {
   clampPointToRegion,
   indexAtPoint,
   nearestIndex,
+  placePetWindow,
   rectAtPoint,
   regionHoleRatio,
   translateRects,
@@ -430,5 +431,116 @@ describe('throwStepRegion —— confineToScreen：锁定屏后屏缝也当墙',
     assert.ok(end.x <= SPACE.bounds[0].maxX + 1e-6, `不得越过主屏右缘：x=${end.x}`);
     assert.equal(end.screen, 0);
     assert.ok(bodyVisible(end.x, end.y), `落点必须可见：${end.x},${end.y}`);
+  });
+});
+
+describe('placePetWindow —— 窗口夹在屏内，宠物在窗口内滑到屏幕边缘', () => {
+  // 实测的 GNOME 工作区（3408×2130 屏，顶栏 54px）：窗口 = 宠物 + 四周余量。
+  const PET_W = 462;
+  const PET_H = 300;
+  const BASE = { l: 231, t: 231, r: 231, b: 231 };
+  const WIN_W = PET_W + BASE.l + BASE.r;
+  const WIN_H = PET_H + BASE.t + BASE.b;
+  const WORK: Rect = { x: 0, y: 54, width: 3408, height: 1972 };
+  const place = (x: number, y: number, area: Rect | null = WORK) =>
+    placePetWindow({
+      x,
+      y,
+      width: PET_W,
+      height: PET_H,
+      windowWidth: WIN_W,
+      windowHeight: WIN_H,
+      base: BASE,
+      area,
+    });
+
+  test('屏中央：窗口与余量都保持配置值（不夹取）', () => {
+    assert.deepEqual(place(1000, 800), {
+      x: 1000 - BASE.l,
+      y: 800 - BASE.t,
+      margins: { ...BASE },
+    });
+  });
+
+  test('贴左/上边：窗口停在屏角，左/上余量收缩到 0', () => {
+    const p = place(WORK.x, WORK.y);
+    assert.equal(p.x, WORK.x);
+    assert.equal(p.y, WORK.y);
+    assert.equal(p.margins.l, 0);
+    assert.equal(p.margins.t, 0);
+    assert.equal(p.margins.r, WIN_W - PET_W);
+    assert.equal(p.margins.b, WIN_H - PET_H);
+  });
+
+  test('贴右/下边：窗口停在「工作区 − 窗口」，右/下余量收缩到 0', () => {
+    const p = place(WORK.x + WORK.width - PET_W, WORK.y + WORK.height - PET_H);
+    assert.equal(p.x, WORK.x + WORK.width - WIN_W);
+    assert.equal(p.y, WORK.y + WORK.height - WIN_H);
+    assert.equal(p.margins.l, WIN_W - PET_W);
+    assert.equal(p.margins.t, WIN_H - PET_H);
+    assert.equal(p.margins.r, 0);
+    assert.equal(p.margins.b, 0);
+  });
+
+  test('宠物被拖出屏外：窗口仍夹在屏内，余量变负（超出部分由窗口裁掉）', () => {
+    const p = place(-1000, -2000);
+    assert.equal(p.x, WORK.x);
+    assert.equal(p.y, WORK.y);
+    assert.equal(p.margins.l, -1000);
+    assert.equal(p.margins.t, -2000 - WORK.y);
+    // 窗口尺寸恒定 ⇒ l+r、t+b 恒定，命中区换算不受负余量影响
+    assert.equal(p.margins.l + p.margins.r, WIN_W - PET_W);
+    assert.equal(p.margins.t + p.margins.b, WIN_H - PET_H);
+  });
+
+  test('任意落点：窗口始终完整落在工作区内，且 l+r / t+b 恒定', () => {
+    const points: Array<[number, number]> = [
+      [-5000, -5000],
+      [0, 0],
+      [1704, 1000],
+      [WORK.x + WORK.width - 1, WORK.y + WORK.height - 1],
+      [5000, 5000],
+    ];
+    for (const [x, y] of points) {
+      const p = place(x, y);
+      assert.ok(p.x >= WORK.x && p.x + WIN_W <= WORK.x + WORK.width, `x ${x} → ${p.x}`);
+      assert.ok(p.y >= WORK.y && p.y + WIN_H <= WORK.y + WORK.height, `y ${y} → ${p.y}`);
+      assert.equal(p.margins.l + p.margins.r, WIN_W - PET_W, `x ${x}`);
+      assert.equal(p.margins.t + p.margins.b, WIN_H - PET_H, `y ${y}`);
+    }
+  });
+
+  test('窗口比屏还大：窗口停在屏左上角，不让 max < min 产生 NaN/跳动', () => {
+    const small: Rect = { x: 10, y: 20, width: 600, height: 300 };
+    const p = place(100, 80, small);
+    assert.equal(p.x, small.x);
+    assert.equal(p.y, small.y);
+    assert.equal(p.margins.l, 90);
+    assert.equal(p.margins.t, 60);
+    assert.equal(p.margins.l + p.margins.r, WIN_W - PET_W);
+    assert.equal(p.margins.t + p.margins.b, WIN_H - PET_H);
+  });
+
+  test('多屏骑缝：按工作区外接矩形夹取，窗口可以跨过屏缝（不裁宠物）', () => {
+    // 实测右倒 T 型双屏的外接工作区；宠物在主屏右缘附近骑缝。
+    const hull: Rect = { x: 0, y: -532, width: 3795, height: 2147 };
+    const x = MAIN.width - PET_W / 2; // 主屏右缘正好穿过宠物中心
+    const p = place(x, 600, hull);
+    assert.equal(p.x, x - BASE.l);
+    assert.equal(p.margins.l, BASE.l, '未贴到桌面外缘，余量不应收缩');
+    assert.ok(p.x + WIN_W <= hull.width, '窗口仍在外接工作区内');
+  });
+
+  test('没有工作区（几何未就绪/单测）：保持旧行为，不夹取', () => {
+    const p = place(-1000, -2000, null);
+    assert.equal(p.x, -1000 - BASE.l);
+    assert.equal(p.y, -2000 - BASE.t);
+    assert.deepEqual(p.margins, { ...BASE });
+  });
+
+  test('从屏边往里拖：余量立即恢复配置值，不残留上一帧的偏移', () => {
+    assert.equal(place(WORK.x, 800).margins.l, 0);
+    assert.deepEqual(place(WORK.x + BASE.l, 800).margins, { ...BASE });
+    assert.deepEqual(place(1000, 800).margins, { ...BASE });
   });
 });

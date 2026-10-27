@@ -12,8 +12,16 @@
  *   0 thinking / 1 working / 2 result / 3 waiting / 4 success / 5 error
  */
 
+/** 工作状态档位（数组索引 = events.workStatus 档位；顺序勿在中间插入新档） */
+export const HOST_WORK_STATUS_STATES = ['thinking', 'working', 'result', 'waiting', 'success', 'error'] as const;
+
 /** 工作状态档位（数组索引 = events.workStatus 档位） */
-export type HostWorkStatusState = 'thinking' | 'working' | 'result' | 'waiting' | 'success' | 'error';
+export type HostWorkStatusState = (typeof HOST_WORK_STATUS_STATES)[number];
+
+/** 外部输入收窄：恰好是六个档位之一才放行（`null` 由调用方单独处理，表示清空） */
+export function isHostWorkStatusState(value: unknown): value is HostWorkStatusState {
+  return typeof value === 'string' && (HOST_WORK_STATUS_STATES as readonly string[]).includes(value);
+}
 
 /**
  * turn/end reason.kind → 状态：
